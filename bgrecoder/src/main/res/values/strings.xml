@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">bgrecoder</string>
+    <string name="notification_title">recording</string>
+    <string name="notification_text">currently ongoing</string>
 </resources>

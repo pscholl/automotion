@@ -1,5 +1,6 @@
 package de.uni_freiburg.bgrecorder;
 
+import android.app.Notification;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
@@ -34,10 +35,11 @@ import de.uni_freiburg.ffmpeg.FFMpegProcess;
  * Created by phil on 07.08.18.
  */
 
-public class bgrecorder extends Service {
+public class RecorderService extends Service {
     private static final double RATE = 50.;
     private String VERSION = "1.0";
     private FFMpegProcess mFFmpeg;
+    private int NOTIFICATION_ID = 0x007;
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -84,9 +86,10 @@ public class bgrecorder extends Service {
         SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
         Sensor[] sensors = new Sensor[] {
             sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER, true),
-//            sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD, true),
+/*            sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD, true),
             sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE, true),
-//            sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR, true)
+            sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR, true)
+*/
         };
 
         for (Sensor s : sensors)
@@ -111,6 +114,7 @@ public class bgrecorder extends Service {
                         .addAudio(format, RATE, getNumChannels(s))
                         .setStreamTag("name", s.getName());
 
+
             mFFmpeg = b.build();
 
             /**
@@ -119,11 +123,12 @@ public class bgrecorder extends Service {
             for (int i = 0; i < sensors.length; i++) {
                 int us = (int) (1e6/RATE);
                 Sensor s = sensors[i];
-                HandlerThread t = new HandlerThread(s.getName() + " thread");
+                HandlerThread t = new HandlerThread(s.getName() + " thread"); t.start();
                 Handler h = new Handler(t.getLooper());
-                CopyListener c = new CopyListener(mFFmpeg.getOutputStream(i));
+                CopyListener c = new CopyListener(mFFmpeg, i, RATE);
                 sm.registerListener(c, s, us, s.getFifoMaxEventCount()/2 * us, h);
             }
+
         } catch (Exception e) {
             e.printStackTrace();
             return START_NOT_STICKY;
@@ -134,8 +139,27 @@ public class bgrecorder extends Service {
          * destroyed by using the startForeground method. If not doing so,
          * the service is also killed when an accompanying Activity is
          * destroyed (wtf). */
-        //startForeground(status.NOTIFICATION_ID, status.mNotification.build());
+        Notification notification = new Notification.Builder(this)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(getString(R.string.notification_title))
+                .setContentText(getString(R.string.notification_text))
+                .setPriority(Notification.PRIORITY_LOW)
+                .build();
+        startForeground(NOTIFICATION_ID, notification);
         return START_NOT_STICKY;
+    }
+
+    @Override
+    public void onDestroy() {
+        if (mFFmpeg != null) {
+            try {
+
+                mFFmpeg.terminate();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+        super.onDestroy();
     }
 
     private int getNumChannels(Sensor s) throws Exception {
@@ -154,27 +178,49 @@ public class bgrecorder extends Service {
     }
 
     private class CopyListener implements SensorEventListener {
-        private final OutputStream mOut;
+        private final int index;
+        private final FFMpegProcess ffmpeg;
+        private final double mDelayUS;
+
+        private OutputStream mOut;
         private ByteBuffer mBuf;
 
-        public CopyListener(OutputStream outputStream) {
-            mOut = outputStream;
+        /** delayed open of outputstream to not block the main stream
+         *  @param mFFmpeg
+         * @param i
+         * @param rate
+         */
+        public CopyListener(FFMpegProcess mFFmpeg, int i, double rate) {
+            ffmpeg = mFFmpeg;
+            index = i;
+            mOut = null;
+            mDelayUS = 1e6 / rate;
+                    
         }
 
         @Override
         public void onSensorChanged(SensorEvent sensorEvent) {
-            if (mBuf == null)
-                mBuf = ByteBuffer.allocate(4 * sensorEvent.values.length);
-            else
-                mBuf.clear();
-
-            for (float v : sensorEvent.values)
-                mBuf.putFloat(v);
-
             try {
+                if (mBuf == null) {
+                    mBuf = ByteBuffer.allocate(4 * sensorEvent.values.length);
+                    mBuf.order(ByteOrder.nativeOrder());
+                } else
+                    mBuf.clear();
+
+                if (mOut == null)
+                    mOut = ffmpeg.getOutputStream(index);
+
+                for (float v : sensorEvent.values)
+                    mBuf.putFloat(v);
+
+                //sensorEvent.timestamp
+
                 mOut.write(mBuf.array());
             } catch (IOException e) {
                 e.printStackTrace();
+                SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
+                sm.unregisterListener(this);
+
             }
         }
 

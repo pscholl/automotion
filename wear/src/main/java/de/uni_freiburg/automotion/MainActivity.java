@@ -11,7 +11,7 @@ import android.support.v4.app.ActivityCompat;
 import android.support.v4.app.FragmentActivity;
 import android.support.v4.content.ContextCompat;
 
-import de.uni_freiburg.bgrecorder.bgrecorder;
+import de.uni_freiburg.bgrecorder.RecorderService;
 
 /**
  * Created by phil on 22.08.18.
@@ -35,8 +35,12 @@ public class MainActivity extends FragmentActivity {
         if (!allowed(EXT_STORAGE))
             reqPerm(EXT_STORAGE);
         else
-            startService(new Intent(this, bgrecorder.class));
+            startService(new Intent(this, RecorderService.class));
     }
+
+    /**
+     * down here is only permission handling stuff
+     */
 
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
@@ -46,7 +50,7 @@ public class MainActivity extends FragmentActivity {
         if (grantResults[0] != PackageManager.PERMISSION_GRANTED)
             return;
 
-        startService(new Intent(this, bgrecorder.class));
+        startService(new Intent(this, RecorderService.class));
     }
 
     private boolean allowed(String perm) {

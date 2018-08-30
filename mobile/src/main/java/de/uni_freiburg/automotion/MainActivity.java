@@ -8,7 +8,7 @@ import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.Toolbar;
 import android.view.View;
 
-import de.uni_freiburg.bgrecorder.bgrecorder;
+import de.uni_freiburg.bgrecorder.RecorderService;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -28,7 +28,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        startService(new Intent(this, bgrecorder.class));
+        startService(new Intent(this, RecorderService.class));
     }
 
 }

@@ -257,7 +257,7 @@ public class FFMpegProcess {
             File f = File.createTempFile("ffmpeg", "", dir);
 
             inputopts.add("-i");
-            inputopts.add(f.getAbsolutePath());
+            inputopts.add("async:file:"+f.getAbsolutePath());
 
             /** create named pipe */
             f.delete();
