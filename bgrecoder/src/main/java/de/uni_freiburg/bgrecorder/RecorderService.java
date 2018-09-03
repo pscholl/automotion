@@ -14,6 +14,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.provider.Settings;
+import android.util.Log;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -86,10 +87,9 @@ public class RecorderService extends Service {
         SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
         Sensor[] sensors = new Sensor[] {
             sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER, true),
-/*            sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD, true),
+            sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD, true),
             sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE, true),
             sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR, true)
-*/
         };
 
         for (Sensor s : sensors)
@@ -125,7 +125,7 @@ public class RecorderService extends Service {
                 Sensor s = sensors[i];
                 HandlerThread t = new HandlerThread(s.getName() + " thread"); t.start();
                 Handler h = new Handler(t.getLooper());
-                CopyListener c = new CopyListener(mFFmpeg, i, RATE);
+                CopyListener c = new CopyListener(mFFmpeg, i, RATE, s.getName());
                 sm.registerListener(c, s, us, s.getFifoMaxEventCount()/2 * us, h);
             }
 
@@ -181,20 +181,24 @@ public class RecorderService extends Service {
         private final int index;
         private final FFMpegProcess ffmpeg;
         private final double mDelayUS;
+        private final String mName;
 
         private OutputStream mOut;
         private ByteBuffer mBuf;
+        private long mLastTimestamp = -1;
 
         /** delayed open of outputstream to not block the main stream
-         *  @param mFFmpeg
+         * @param mFFmpeg
          * @param i
          * @param rate
+         * @param name
          */
-        public CopyListener(FFMpegProcess mFFmpeg, int i, double rate) {
+        public CopyListener(FFMpegProcess mFFmpeg, int i, double rate, String name) {
             ffmpeg = mFFmpeg;
             index = i;
             mOut = null;
             mDelayUS = 1e6 / rate;
+            mName = name;
                     
         }
 
@@ -213,9 +217,17 @@ public class RecorderService extends Service {
                 for (float v : sensorEvent.values)
                     mBuf.putFloat(v);
 
-                //sensorEvent.timestamp
+                if (mLastTimestamp != -1) {
+                    long mDiffUs = Math.abs(sensorEvent.timestamp - mLastTimestamp) / 1000;
 
+                    if ( mDiffUs > 1.1 * mDelayUS )
+                        Log.e("automotion", String.format(
+                               "timestamp diff too large %.4f ms %s", mDiffUs / 1000., mName));
+                }
+
+                mLastTimestamp = sensorEvent.timestamp;
                 mOut.write(mBuf.array());
+
             } catch (IOException e) {
                 e.printStackTrace();
                 SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
