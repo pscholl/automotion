@@ -42,6 +42,9 @@ public class RecorderService extends Service {
     private FFMpegProcess mFFmpeg;
     private int NOTIFICATION_ID = 0x007;
 
+    public static final String ACTION_STOP = "ACTION_STOP";
+    public static final String ACTION_STRT = "ACTION_STRT";
+
     @Override
     public IBinder onBind(Intent intent) {
         return null;
@@ -75,11 +78,17 @@ public class RecorderService extends Service {
         String platform = Build.BOARD + " " + Build.DEVICE + " " + Build.VERSION.SDK_INT,
                output = getDefaultOutputPath(getApplicationContext()),
                android_id =  Settings.Secure.getString(
-                       getContentResolver(), Settings.Secure.ANDROID_ID),
-               format = ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN ? "f32le" : "f32be";
+                               getContentResolver(), Settings.Secure.ANDROID_ID),
+               format = ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN ? "f32le" : "f32be",
+               action = intent.getAction();
+
+        if (ACTION_STOP.equals(action)) {
+            onDestroy();
+            return START_NOT_STICKY;
+        }
 
         if (mFFmpeg != null)
-            return START_NOT_STICKY;
+            return START_STICKY;
 
         /**
          *  Get the sensors from the system and check if they are wakeups
@@ -146,6 +155,7 @@ public class RecorderService extends Service {
                 .setPriority(Notification.PRIORITY_LOW)
                 .build();
         startForeground(NOTIFICATION_ID, notification);
+
         return START_NOT_STICKY;
     }
 
@@ -153,12 +163,14 @@ public class RecorderService extends Service {
     public void onDestroy() {
         if (mFFmpeg != null) {
             try {
-
                 mFFmpeg.terminate();
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
         }
+p
+        mFFmpeg = null;
+        stopForeground(true);
         super.onDestroy();
     }
 
@@ -180,7 +192,8 @@ public class RecorderService extends Service {
     private class CopyListener implements SensorEventListener {
         private final int index;
         private final FFMpegProcess ffmpeg;
-        private final double mDelayUS;
+        private final long mDelayUS;
+        private long mErrorUS;
         private final String mName;
 
         private OutputStream mOut;
@@ -197,9 +210,9 @@ public class RecorderService extends Service {
             ffmpeg = mFFmpeg;
             index = i;
             mOut = null;
-            mDelayUS = 1e6 / rate;
             mName = name;
-                    
+            mErrorUS = 0;
+            mDelayUS = (long) (1e6 / rate);
         }
 
         @Override
@@ -217,17 +230,23 @@ public class RecorderService extends Service {
                 for (float v : sensorEvent.values)
                     mBuf.putFloat(v);
 
-                if (mLastTimestamp != -1) {
-                    long mDiffUs = Math.abs(sensorEvent.timestamp - mLastTimestamp) / 1000;
+                if (mLastTimestamp != -1)
+                    mErrorUS += (sensorEvent.timestamp - mLastTimestamp) / 1000 - mDelayUS;
 
-                    if ( mDiffUs > 1.1 * mDelayUS )
-                        Log.e("automotion", String.format(
-                               "timestamp diff too large %.4f ms %s", mDiffUs / 1000., mName));
-                }
+                if (Math.abs(mErrorUS) > 1.1*mDelayUS )
+                    Log.e("bgrec", String.format(
+                            "sample delay too large %.4f %s", mErrorUS/1e6, mName));
+
+                if (mErrorUS < -mDelayUS) {         // one sample is missing
+                    mOut.write(mBuf.array());
+                    mErrorUS += mDelayUS;
+                } else if (mErrorUS > mDelayUS) {   // a sample too much
+                    ;
+                    mErrorUS -= mDelayUS;
+                } else                              // normal sample
+                    mOut.write(mBuf.array());
 
                 mLastTimestamp = sensorEvent.timestamp;
-                mOut.write(mBuf.array());
-
             } catch (IOException e) {
                 e.printStackTrace();
                 SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
