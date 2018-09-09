@@ -2,6 +2,7 @@ package de.uni_freiburg.ffmpeg;
 
 import android.content.Context;
 import android.os.AsyncTask;
+import android.os.Build;
 import android.os.Environment;
 import android.util.Log;
 
@@ -16,6 +17,7 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * This is a wrapper for FFMpeg that allows to run ffmpeg executable and returns Process
@@ -71,12 +73,7 @@ public class FFMpegProcess {
     }
 
     public int waitFor() throws InterruptedException {
-        int ret = p.waitFor();
-        for (OutputStream s : mStreams.values())
-            try { s.close(); }
-            catch (IOException e) {}
-
-        return ret;
+        return p.waitFor();
     }
 
     public InputStream getErrorStream() { return p.getErrorStream();  }

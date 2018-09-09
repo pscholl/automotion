@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
+import android.hardware.SensorEventListener2;
 import android.hardware.SensorManager;
 import android.os.Build;
 import android.os.Environment;
@@ -26,6 +27,7 @@ import java.nio.ByteOrder;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.LinkedList;
 import java.util.TimeZone;
 
 import de.uni_freiburg.ffmpeg.FFMpegProcess;
@@ -44,6 +46,7 @@ public class RecorderService extends Service {
 
     public static final String ACTION_STOP = "ACTION_STOP";
     public static final String ACTION_STRT = "ACTION_STRT";
+    private LinkedList<CopyListener> mSensorListeners = new LinkedList<>();
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -136,6 +139,7 @@ public class RecorderService extends Service {
                 Handler h = new Handler(t.getLooper());
                 CopyListener c = new CopyListener(mFFmpeg, i, RATE, s.getName());
                 sm.registerListener(c, s, us, s.getFifoMaxEventCount()/2 * us, h);
+                mSensorListeners.add(c);
             }
 
         } catch (Exception e) {
@@ -163,12 +167,32 @@ public class RecorderService extends Service {
     public void onDestroy() {
         if (mFFmpeg != null) {
             try {
-                mFFmpeg.terminate();
+                SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
+
+                for (CopyListener l : mSensorListeners)
+                    sm.flush(l);
+
+                /** call onFlushCompleted, in case the system's onFlushCompleted does not work,
+                 * which would lead to the whole system waiting forever. For this also a new
+                 * sensorevent needs to be posted to make sure that the copylistener exits.
+                 */
+                Runnable timeout = new Runnable() {
+                    @Override
+                    public void run() {
+                        for (CopyListener l : mSensorListeners) {
+                            l.onFlushCompleted(null);
+                            l.onSensorChanged(null);
+                        }
+                    }
+                };
+
+                new Handler(getMainLooper()).postDelayed(timeout, 10 * 1000);
+                mFFmpeg.waitFor();
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
         }
-p
+
         mFFmpeg = null;
         stopForeground(true);
         super.onDestroy();
@@ -189,7 +213,7 @@ p
         }
     }
 
-    private class CopyListener implements SensorEventListener {
+    private class CopyListener implements SensorEventListener, SensorEventListener2 {
         private final int index;
         private final FFMpegProcess ffmpeg;
         private final long mDelayUS;
@@ -199,6 +223,7 @@ p
         private OutputStream mOut;
         private ByteBuffer mBuf;
         private long mLastTimestamp = -1;
+        private boolean mFlushCompleted = false;
 
         /** delayed open of outputstream to not block the main stream
          * @param mFFmpeg
@@ -218,6 +243,16 @@ p
         @Override
         public void onSensorChanged(SensorEvent sensorEvent) {
             try {
+
+                /*
+                 * if a flush was completed, the sensor process is done, and the recording
+                 * will be stopped. Hence the output channel is closed to let ffmpeg know,
+                 * that the recording is finished. This will then lead to an IOException,
+                 * which cleanly exits the whole process.
+                 */
+                if (mFlushCompleted)
+                    mOut.close();
+
                 if (mBuf == null) {
                     mBuf = ByteBuffer.allocate(4 * sensorEvent.values.length);
                     mBuf.order(ByteOrder.nativeOrder());
@@ -237,12 +272,14 @@ p
                     Log.e("bgrec", String.format(
                             "sample delay too large %.4f %s", mErrorUS/1e6, mName));
 
-                if (mErrorUS < -mDelayUS) {         // one sample is missing
-                    mOut.write(mBuf.array());
-                    mErrorUS += mDelayUS;
+                if (mErrorUS < -mDelayUS) {         // too little samples
+                    while (mErrorUS < -mDelayUS) {
+                        mOut.write(mBuf.array());
+                        mErrorUS += mDelayUS;
+                    }
                 } else if (mErrorUS > mDelayUS) {   // a sample too much
-                    ;
-                    mErrorUS -= mDelayUS;
+                    while (mErrorUS > mDelayUS)
+                        mErrorUS -= mDelayUS;
                 } else                              // normal sample
                     mOut.write(mBuf.array());
 
@@ -257,6 +294,11 @@ p
 
         @Override
         public void onAccuracyChanged(Sensor sensor, int i) {
+        }
+
+        @Override
+        public void onFlushCompleted(Sensor sensor) {
+            mFlushCompleted = true;
         }
     }
 }
