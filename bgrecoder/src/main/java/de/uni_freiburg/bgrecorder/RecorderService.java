@@ -18,17 +18,19 @@ import android.provider.Settings;
 import android.util.Log;
 
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.LinkedList;
 import java.util.TimeZone;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import de.uni_freiburg.ffmpeg.FFMpegProcess;
 
@@ -47,6 +49,10 @@ public class RecorderService extends Service {
     public static final String ACTION_STOP = "ACTION_STOP";
     public static final String ACTION_STRT = "ACTION_STRT";
     private LinkedList<CopyListener> mSensorListeners = new LinkedList<>();
+
+    /* for start synchronization */
+    private Long mStartTimeNS = -1l;
+    private CountDownLatch mSyncLatch = null;
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -99,27 +105,29 @@ public class RecorderService extends Service {
         SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
         Sensor[] sensors = new Sensor[] {
             sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER, true),
-            sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD, true),
+//            sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD, true),
             sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE, true),
             sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR, true)
         };
+        CopyListener[] listeners = new CopyListener[sensors.length];
 
         for (Sensor s : sensors)
             if (s==null || !s.isWakeUpSensor())
                 throw new Error("wakeup sensor not supported!");
 
+
         /**
-         * build an ffmpeg process
+         * build and start the ffmpeg process, which transcodes into a matroska file.
          */
         try {
             FFMpegProcess.Builder b = new FFMpegProcess.Builder(getApplicationContext())
-                .setOutput(output, "matroska")
-                .setCodec("a", "wavpack")
-                .setTag("recorder", "automotion " + VERSION)
-                .setTag("android_id", android_id)
-                .setTag("platform", platform)
-                .setTag("fingerprint", Build.FINGERPRINT)
-                .setTag("beginning", getCurrentDateAsIso());
+                    .setOutput(output, "matroska")
+                    .setCodec("a", "wavpack")
+                    .setTag("recorder", "automotion " + VERSION)
+                    .setTag("android_id", android_id)
+                    .setTag("platform", platform)
+                    .setTag("fingerprint", Build.FINGERPRINT)
+                    .setTag("beginning", getCurrentDateAsIso());
 
             for (Sensor s : sensors)
                 b
@@ -128,24 +136,31 @@ public class RecorderService extends Service {
 
 
             mFFmpeg = b.build();
-
-            /**
-             * now hook the sensorlisteners to ffmpeg, in a thread for each sensor
-             */
-            for (int i = 0; i < sensors.length; i++) {
-                int us = (int) (1e6/RATE);
-                Sensor s = sensors[i];
-                HandlerThread t = new HandlerThread(s.getName() + " thread"); t.start();
-                Handler h = new Handler(t.getLooper());
-                CopyListener c = new CopyListener(mFFmpeg, i, RATE, s.getName());
-                sm.registerListener(c, s, us, s.getFifoMaxEventCount()/2 * us, h);
-                mSensorListeners.add(c);
-            }
-
         } catch (Exception e) {
             e.printStackTrace();
             return START_NOT_STICKY;
         }
+
+        /**
+         * for each sensor there is thread that copies data to the ffmpeg process. For startup
+         * synchronization the threads are blocked until the starttime has been set at which
+         * point the threadlock will be released.
+         */
+        int us = (int) (1e6/RATE);
+
+        for (int i=0; i < sensors.length; i++) {
+            Sensor s = sensors[i];
+            HandlerThread t = new HandlerThread(s.getName()); t.start();
+            Handler h = new Handler(t.getLooper());
+            CopyListener l = new CopyListener(i, RATE, s.getName());
+            sm.registerListener(l, s, us, s.getFifoMaxEventCount()/2 * us, h);
+            mSensorListeners.add(l);
+        }
+
+        SyncLockListener lock = new SyncLockListener(sensors);
+        for (int i=0; i < sensors.length; i++)
+            sm.registerListener(lock, sensors[i], us);
+
 
         /** notify the system that a new recording was started, and make
          * sure that the service does not get called when an activity is
@@ -175,18 +190,22 @@ public class RecorderService extends Service {
                 /** call onFlushCompleted, in case the system's onFlushCompleted does not work,
                  * which would lead to the whole system waiting forever. For this also a new
                  * sensorevent needs to be posted to make sure that the copylistener exits.
-                 */
                 Runnable timeout = new Runnable() {
                     @Override
                     public void run() {
                         for (CopyListener l : mSensorListeners) {
+                            Log.e("bgrec", "flush timed out");
                             l.onFlushCompleted(null);
                             l.onSensorChanged(null);
                         }
                     }
                 };
 
-                new Handler(getMainLooper()).postDelayed(timeout, 10 * 1000);
+                HandlerThread th = new HandlerThread("flush timeout"); th.start();
+                Handler h = new Handler(th.getLooper());
+                h.postDelayed(timeout, 10 * 1000);
+                */
+
                 mFFmpeg.waitFor();
             } catch (InterruptedException e) {
                 e.printStackTrace();
@@ -215,8 +234,8 @@ public class RecorderService extends Service {
 
     private class CopyListener implements SensorEventListener, SensorEventListener2 {
         private final int index;
-        private final FFMpegProcess ffmpeg;
         private final long mDelayUS;
+        private long mSampleCount;
         private long mErrorUS;
         private final String mName;
 
@@ -225,24 +244,27 @@ public class RecorderService extends Service {
         private long mLastTimestamp = -1;
         private boolean mFlushCompleted = false;
 
-        /** delayed open of outputstream to not block the main stream
-         * @param mFFmpeg
+        /**
          * @param i
          * @param rate
          * @param name
          */
-        public CopyListener(FFMpegProcess mFFmpeg, int i, double rate, String name) {
-            ffmpeg = mFFmpeg;
+        public CopyListener(int i, double rate, String name) {
             index = i;
             mOut = null;
             mName = name;
             mErrorUS = 0;
             mDelayUS = (long) (1e6 / rate);
+            mSampleCount = 0;
         }
 
         @Override
         public void onSensorChanged(SensorEvent sensorEvent) {
             try {
+                /*
+                 * wait until the mStartTimeNS is cleared. This will be done by the SyncLockListener
+                 */
+                mSyncLatch.await();
 
                 /*
                  * if a flush was completed, the sensor process is done, and the recording
@@ -253,42 +275,61 @@ public class RecorderService extends Service {
                 if (mFlushCompleted)
                     mOut.close();
 
+                if (mLastTimestamp != -1)
+                    mErrorUS += (sensorEvent.timestamp - mLastTimestamp) / 1000 - mDelayUS;
+
+                /**
+                 *  multiple stream synchronization, wait until a global timestamp was set,
+                 *  and only start pushing events after this timestamp.
+                 */
+                if (sensorEvent.timestamp < mStartTimeNS) {
+                    return;
+                }
+
+                /*
+                 * create an output buffer, once created only delete the last sample. Insert
+                 * values afterwards.
+                 */
                 if (mBuf == null) {
                     mBuf = ByteBuffer.allocate(4 * sensorEvent.values.length);
                     mBuf.order(ByteOrder.nativeOrder());
+                    Log.e("bgrec", String.format("%s started at %d", mName, sensorEvent.timestamp));
                 } else
                     mBuf.clear();
-
-                if (mOut == null)
-                    mOut = ffmpeg.getOutputStream(index);
 
                 for (float v : sensorEvent.values)
                     mBuf.putFloat(v);
 
-                if (mLastTimestamp != -1)
-                    mErrorUS += (sensorEvent.timestamp - mLastTimestamp) / 1000 - mDelayUS;
-
-                if (Math.abs(mErrorUS) > 1.1*mDelayUS )
+                /**
+                 * check whether or not interpolation is required
+                 */
+                if (Math.abs(mErrorUS) > 1.1 * mDelayUS)
                     Log.e("bgrec", String.format(
-                            "sample delay too large %.4f %s", mErrorUS/1e6, mName));
+                            "sample delay too large %.4f %s", mErrorUS / 1e6, mName));
 
-                if (mErrorUS < -mDelayUS) {         // too little samples
-                    while (mErrorUS < -mDelayUS) {
+                if (mOut == null)
+                    mOut = mFFmpeg.getOutputStream(index);
+
+                if (mErrorUS < -mDelayUS) {   // too fast -> remove
+                    mErrorUS += (sensorEvent.timestamp - mLastTimestamp) / 1000;
+                } else if (mErrorUS > mDelayUS) {   // too slow -> copy'n'insert
+                    while (mErrorUS > mDelayUS) {
                         mOut.write(mBuf.array());
-                        mErrorUS += mDelayUS;
-                    }
-                } else if (mErrorUS > mDelayUS) {   // a sample too much
-                    while (mErrorUS > mDelayUS)
                         mErrorUS -= mDelayUS;
-                } else                              // normal sample
+                        mSampleCount++;
+                    }
+                } else {   // rate ok -> write
                     mOut.write(mBuf.array());
+                    mSampleCount++;
+                }
 
                 mLastTimestamp = sensorEvent.timestamp;
-            } catch (IOException e) {
+
+            } catch (Exception e) {
                 e.printStackTrace();
                 SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
                 sm.unregisterListener(this);
-
+                Log.e("bgrec", String.format("%d samples written %s", mSampleCount, mName));
             }
         }
 
@@ -299,6 +340,45 @@ public class RecorderService extends Service {
         @Override
         public void onFlushCompleted(Sensor sensor) {
             mFlushCompleted = true;
+        }
+    }
+
+    private class SyncLockListener implements SensorEventListener {
+        private final Sensor[] mSensors;
+        private boolean started[];
+
+        public SyncLockListener(Sensor[] sensors) {
+            mSensors = sensors;
+            started = new boolean[sensors.length];
+            Arrays.fill(started, false);
+            mSyncLatch = new CountDownLatch(1);
+        }
+
+
+        @Override
+        /*
+         * wait for all sensor to deliver events, if all sensors are started, notifyAll threads
+         * waiting on this object.
+         */
+        public void onSensorChanged(SensorEvent event) {
+            int i = Arrays.asList(mSensors).indexOf(event.sensor);
+
+            if (!started[i])
+                mStartTimeNS = Long.max(event.timestamp, mStartTimeNS);
+
+            started[i]= true;
+
+            boolean allstarted = true;
+            for (i=0; i < started.length; i++)
+                allstarted &= started[i];
+
+            if (allstarted)
+                mSyncLatch.countDown();
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {
+
         }
     }
 }
