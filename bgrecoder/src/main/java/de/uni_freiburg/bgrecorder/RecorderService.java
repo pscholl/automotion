@@ -355,11 +355,11 @@ public class RecorderService extends Service {
         }
 
 
-        @Override
         /*
-         * wait for all sensor to deliver events, if all sensors are started, notifyAll threads
-         * waiting on this object.
+         * wait for all sensor to deliver events, if all sensors are started, free the countdown
+         * latch and unregister this listerner.
          */
+        @Override
         public void onSensorChanged(SensorEvent event) {
             int i = Arrays.asList(mSensors).indexOf(event.sensor);
 
@@ -372,13 +372,16 @@ public class RecorderService extends Service {
             for (i=0; i < started.length; i++)
                 allstarted &= started[i];
 
-            if (allstarted)
+            if (allstarted) {
                 mSyncLatch.countDown();
+
+                ((SensorManager) getSystemService(SENSOR_SERVICE))
+                        .unregisterListener(this);
+            }
         }
 
         @Override
         public void onAccuracyChanged(Sensor sensor, int accuracy) {
-
         }
     }
 }
