@@ -105,7 +105,7 @@ public class RecorderService extends Service {
         SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
         Sensor[] sensors = new Sensor[] {
             sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER, true),
-//            sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD, true),
+            sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD, true),
             sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE, true),
             sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR, true)
         };
@@ -123,6 +123,7 @@ public class RecorderService extends Service {
             FFMpegProcess.Builder b = new FFMpegProcess.Builder(getApplicationContext())
                     .setOutput(output, "matroska")
                     .setCodec("a", "wavpack")
+                    .addOutputArgument("-shortest")
                     .setTag("recorder", "automotion " + VERSION)
                     .setTag("android_id", android_id)
                     .setTag("platform", platform)

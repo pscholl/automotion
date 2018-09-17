@@ -227,9 +227,16 @@ public class FFMpegProcess {
          */
         public Builder addOutputArgument(String option, String value) {
             outputopts.add(option);
-            outputopts.add(value);
+
+            if (value != null)
+                outputopts.add(value);
 
             return this;
+        }
+
+
+        public Builder addOutputArgument(String option) {
+            return addOutputArgument(option, null);
         }
 
         /** add a cmdline switch
