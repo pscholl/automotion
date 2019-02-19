@@ -1,10 +1,16 @@
 package de.uni_freiburg.bgrecorder;
 
 import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.graphics.Bitmap;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Icon;
+import android.graphics.drawable.VectorDrawable;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -43,6 +49,7 @@ import de.uni_freiburg.ffmpeg.FFMpegProcess;
 
 public class RecorderService extends Service {
     private static final double RATE = 50.;
+    private static final String CHANID = "RecorderServiceNotification";
     private String VERSION = "1.0";
     private FFMpegProcess mFFmpeg;
     private int NOTIFICATION_ID = 0x007;
@@ -86,18 +93,52 @@ public class RecorderService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         super.onStartCommand(intent, flags, startId);
 
-        /** We continiously start the service to receive Battery Events, which can not be done
+        /* We continiously start the service to receive Battery Events, which can not be done
          * differently under Android 8.0 since no Battery PLUG/UNPLUG events are sent to
          * broadcast receivers anymore. */
-        Notification notification = new Notification.Builder(this)
+        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+
+        Notification.Builder nb =  new Notification.Builder(this)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(getString(R.string.notification_title))
-                .setContentText(getString(R.string.notification_text))
-                .setPriority(Notification.PRIORITY_LOW)
-                .build();
+                .setContentText(getString(R.string.notification_recording_ongoing))
+                .setPriority(Notification.PRIORITY_LOW);
 
-        startForeground(NOTIFICATION_ID, notification);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(CHANID,
+                    getString(R.string.notification_channel),
+                    NotificationManager.IMPORTANCE_LOW);
 
+            nm.createNotificationChannel(channel);
+            nb.setChannelId(CHANID);
+        }
+
+
+        /*
+         * start the recording process if there is no ffmpeg instance yet, and no stop intent
+         * was sent.
+         */
+        if (ACTION_STOP.equals(intent.getAction())) {
+            stopRecording();
+            nb.setContentText(getString(R.string.notification_recording_paused));
+        }
+
+        else if (mFFmpeg == null)
+            try {
+                startRecording();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+
+        /*
+         * update the notifications and make sure that the service is started in foreground.
+         */
+        nm.notify(NOTIFICATION_ID, nb.build());
+        startForeground(NOTIFICATION_ID, nb.build());
+
+        /*
+         * make sure that the Battery PLUG/UNPLUG events are received.
+         */
         if (mMainReceiver == null) {
             mMainReceiver = new MainReceiver();
 
@@ -107,20 +148,6 @@ public class RecorderService extends Service {
 
             registerReceiver(mMainReceiver, power);
         }
-
-        /**
-         * start the recording process if there is no ffmpeg instance yet, and no stop intent
-         * was sent.
-         */
-        if (ACTION_STOP.equals(intent.getAction()))
-            stopRecording();
-
-        else if (mFFmpeg == null)
-            try {
-                startRecording();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
 
         return START_STICKY;
     }

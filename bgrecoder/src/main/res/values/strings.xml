@@ -1,5 +1,7 @@
 <resources>
     <string name="app_name">bgrecoder</string>
-    <string name="notification_title">recording</string>
-    <string name="notification_text">currently ongoing</string>
+    <string name="notification_title">sensor recorder</string>
+    <string name="notification_channel">background recording service</string>
+    <string name="notification_recording_ongoing">currently recording</string>
+    <string name="notification_recording_paused">recording paused</string>
 </resources>
