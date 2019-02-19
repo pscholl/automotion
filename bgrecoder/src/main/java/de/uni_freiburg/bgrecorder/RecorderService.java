@@ -7,10 +7,7 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.graphics.Bitmap;
-import android.graphics.drawable.BitmapDrawable;
-import android.graphics.drawable.Icon;
-import android.graphics.drawable.VectorDrawable;
+
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -36,8 +33,6 @@ import java.util.Date;
 import java.util.LinkedList;
 import java.util.TimeZone;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 
 import de.uni_freiburg.ffmpeg.FFMpegProcess;
 
@@ -246,6 +241,9 @@ public class RecorderService extends Service {
     }
 
     private int getNumChannels(Sensor s) throws Exception {
+        /*
+         * https://developer.android.com/reference/android/hardware/SensorEvent#sensor
+         */
         switch (s.getType()) {
             case Sensor.TYPE_ACCELEROMETER:
             case Sensor.TYPE_GYROSCOPE:
@@ -253,7 +251,7 @@ public class RecorderService extends Service {
                 return 3;
 
             case Sensor.TYPE_ROTATION_VECTOR:
-                return 4;
+                return 5;
 
             default:
                 throw new Exception("unknown number of channels for " + s.getName());
@@ -324,6 +322,11 @@ public class RecorderService extends Service {
                     Log.e("bgrec", String.format("%s started at %d", mName, sensorEvent.timestamp));
                 } else
                     mBuf.clear();
+
+                /**
+                 * see https://stackoverflow.com/questions/30279065/how-to-get-the-euler-angles-from-the-rotation-vector-sensor-type-rotation-vecto
+                 * https://developer.android.com/reference/android/hardware/SensorEvent#sensor
+                 */
 
                 for (float v : sensorEvent.values)
                     mBuf.putFloat(v);
