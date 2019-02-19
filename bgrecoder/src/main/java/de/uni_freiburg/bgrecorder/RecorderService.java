@@ -113,7 +113,7 @@ public class RecorderService extends Service {
          * start the recording process if there is no ffmpeg instance yet, and no stop intent
          * was sent.
          */
-        if (ACTION_STOP.equals(intent.getAction())) {
+        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
             stopRecording();
             nb.setContentText(getString(R.string.notification_recording_paused));
         }
@@ -160,22 +160,45 @@ public class RecorderService extends Service {
                 format = ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN ? "f32le" : "f32be";
 
         /**
-         *  Get the sensors from the system and check if they are wakeups
+         *  Try to record this list of sensors. We go through this list and get them as wakeup
+         *  sensors first. Terminate if there is no wakeup supported (otherwise a wake-lock would
+         *  be required). Then get all sensors as non-wakeups and select only those that are there.
          */
         SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
-        Sensor[] sensors = new Sensor[]{
-                /*    sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER, true),
-                    sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD, true),
-                    sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE, true),
-                */
-                sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR, true)
+        int[] types = {
+                Sensor.TYPE_ROTATION_VECTOR,
+                Sensor.TYPE_ACCELEROMETER,
+                Sensor.TYPE_GYROSCOPE,
+                Sensor.TYPE_MAGNETIC_FIELD,
+                Sensor.TYPE_RELATIVE_HUMIDITY,
+                Sensor.TYPE_PRESSURE,
+                Sensor.TYPE_LIGHT,
+                Sensor.TYPE_AMBIENT_TEMPERATURE
         };
-        CopyListener[] listeners = new CopyListener[sensors.length];
+        LinkedList<Sensor> sensors = new LinkedList<>();
+
+        for (int type : types) {
+            Sensor s = sm.getDefaultSensor(type, true);
+
+            if (s == null)
+                s = sm.getDefaultSensor(type);
+
+            if (s != null)
+                sensors.add(s);
+        }
+
+        boolean gotawakeup = false;
+        for (Sensor s : sensors)
+            gotawakeup |= s.isWakeUpSensor();
+
+        if (!gotawakeup)
+            throw new Error("no wakeup sensor on device!");
 
         for (Sensor s : sensors)
-            if (s == null || !s.isWakeUpSensor())
-                throw new Error("wakeup sensor not supported!");
+            Log.d("bgrecorder", String.format("recording %s %s",
+                    s.isWakeUpSensor() ? "wakeup" : "", s.getName()));
 
+        CopyListener[] listeners = new CopyListener[sensors.size()];
 
         /**
          * build and start the ffmpeg process, which transcodes into a matroska file.
@@ -206,19 +229,20 @@ public class RecorderService extends Service {
          */
         int us = (int) (1e6 / RATE);
 
-        for (int i = 0; i < sensors.length; i++) {
-            Sensor s = sensors[i];
+        for (int i = 0; i < sensors.size(); i++) {
+            Sensor s = sensors.get(i);
             HandlerThread t = new HandlerThread(s.getName());
             t.start();
             Handler h = new Handler(t.getLooper());
             CopyListener l = new CopyListener(i, RATE, s.getName());
-            sm.registerListener(l, s, us, s.getFifoMaxEventCount() / 2 * us, h);
+            int delay = s.isWakeUpSensor() ? s.getFifoMaxEventCount() / 2 * us : 1;
+            sm.registerListener(l, s, us, delay, h);
             mSensorListeners.add(l);
         }
 
         SyncLockListener lock = new SyncLockListener(sensors);
-        for (int i = 0; i < sensors.length; i++)
-            sm.registerListener(lock, sensors[i], us);
+        for (int i = 0; i < sensors.size(); i++)
+            sm.registerListener(lock, sensors.get(i), us);
     }
 
 
@@ -252,6 +276,12 @@ public class RecorderService extends Service {
 
             case Sensor.TYPE_ROTATION_VECTOR:
                 return 5;
+
+            case Sensor.TYPE_RELATIVE_HUMIDITY:
+            case Sensor.TYPE_PRESSURE:
+            case Sensor.TYPE_LIGHT:
+            case Sensor.TYPE_AMBIENT_TEMPERATURE:
+                return 1;
 
             default:
                 throw new Exception("unknown number of channels for " + s.getName());
@@ -375,12 +405,12 @@ public class RecorderService extends Service {
     }
 
     private class SyncLockListener implements SensorEventListener {
-        private final Sensor[] mSensors;
+        private final LinkedList<Sensor> mSensors;
         private boolean started[];
 
-        public SyncLockListener(Sensor[] sensors) {
+        public SyncLockListener(LinkedList<Sensor> sensors) {
             mSensors = sensors;
-            started = new boolean[sensors.length];
+            started = new boolean[sensors.size()];
             Arrays.fill(started, false);
             mSyncLatch = new CountDownLatch(1);
         }
@@ -392,7 +422,7 @@ public class RecorderService extends Service {
          */
         @Override
         public void onSensorChanged(SensorEvent event) {
-            int i = Arrays.asList(mSensors).indexOf(event.sensor);
+            int i = mSensors.indexOf(event.sensor);
 
             if (!started[i])
                 mStartTimeNS = Long.max(event.timestamp, mStartTimeNS);

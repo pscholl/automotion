@@ -4,6 +4,7 @@ import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.PersistableBundle;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
@@ -34,8 +35,15 @@ public class MainActivity extends FragmentActivity {
         /** ask for runtime permission to save file on sdcard */
         if (!allowed(EXT_STORAGE))
             reqPerm(EXT_STORAGE);
-        else
+        else {
             startService(new Intent(this, RecorderService.class));
+            new Handler().post(new Runnable() {
+                @Override
+                public void run() {
+                    finish();
+                }
+            });
+        }
     }
 
     /**
