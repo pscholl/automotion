@@ -13,6 +13,7 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorEventListener2;
 import android.hardware.SensorManager;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Environment;
 import android.os.Handler;
@@ -96,7 +97,6 @@ public class RecorderService extends Service {
         Notification.Builder nb =  new Notification.Builder(this)
                 .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(getString(R.string.notification_title))
-                .setContentText(getString(R.string.notification_recording_ongoing))
                 .setPriority(Notification.PRIORITY_LOW);
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -113,17 +113,23 @@ public class RecorderService extends Service {
          * start the recording process if there is no ffmpeg instance yet, and no stop intent
          * was sent.
          */
-        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+        if (intent != null && ACTION_STOP.equals(intent.getAction()))
             stopRecording();
-            nb.setContentText(getString(R.string.notification_recording_paused));
-        }
 
-        else if (mFFmpeg == null)
+        else if (mFFmpeg == null && !isConnected(this))
             try {
                 startRecording();
             } catch (Exception e) {
                 e.printStackTrace();
             }
+
+        /*
+         * update the notification text accordingly
+         */
+        nb.setContentText(getString(
+                mFFmpeg != null ?
+                R.string.notification_recording_ongoing :
+                R.string.notification_recording_paused));
 
         /*
          * update the notifications and make sure that the service is started in foreground.
@@ -145,6 +151,12 @@ public class RecorderService extends Service {
         }
 
         return START_STICKY;
+    }
+
+    public static boolean isConnected(Context context) {
+        Intent intent = context.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        int plugged = intent.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1);
+        return plugged == BatteryManager.BATTERY_PLUGGED_AC || plugged == BatteryManager.BATTERY_PLUGGED_USB;
     }
 
     @Override
@@ -221,13 +233,27 @@ public class RecorderService extends Service {
 
         mFFmpeg = b.build();
 
-
         /**
          * for each sensor there is thread that copies data to the ffmpeg process. For startup
          * synchronization the threads are blocked until the starttime has been set at which
          * point the threadlock will be released.
          */
         int us = (int) (1e6 / RATE);
+
+        mStartTimeNS = -1L;
+        mSyncLatch = new CountDownLatch(sensors.size());
+
+        for (int i = 0; i < sensors.size(); i++)
+            sm.registerListener(new SensorEventListener() {
+                @Override
+                public void onSensorChanged(SensorEvent event) {
+                    mStartTimeNS = Long.max(event.timestamp, mStartTimeNS);
+                    mSyncLatch.countDown();
+                }
+
+                @Override
+                public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+            }, sensors.get(i), us);
 
         for (int i = 0; i < sensors.size(); i++) {
             Sensor s = sensors.get(i);
@@ -239,10 +265,6 @@ public class RecorderService extends Service {
             sm.registerListener(l, s, us, delay, h);
             mSensorListeners.add(l);
         }
-
-        SyncLockListener lock = new SyncLockListener(sensors);
-        for (int i = 0; i < sensors.size(); i++)
-            sm.registerListener(lock, sensors.get(i), us);
     }
 
 
@@ -261,7 +283,6 @@ public class RecorderService extends Service {
         }
 
         mFFmpeg = null;
-        super.onDestroy();
     }
 
     private int getNumChannels(Sensor s) throws Exception {
@@ -401,48 +422,6 @@ public class RecorderService extends Service {
         @Override
         public void onFlushCompleted(Sensor sensor) {
             mFlushCompleted = true;
-        }
-    }
-
-    private class SyncLockListener implements SensorEventListener {
-        private final LinkedList<Sensor> mSensors;
-        private boolean started[];
-
-        public SyncLockListener(LinkedList<Sensor> sensors) {
-            mSensors = sensors;
-            started = new boolean[sensors.size()];
-            Arrays.fill(started, false);
-            mSyncLatch = new CountDownLatch(1);
-        }
-
-
-        /*
-         * wait for all sensor to deliver events, if all sensors are started, free the countdown
-         * latch and unregister this listerner.
-         */
-        @Override
-        public void onSensorChanged(SensorEvent event) {
-            int i = mSensors.indexOf(event.sensor);
-
-            if (!started[i])
-                mStartTimeNS = Long.max(event.timestamp, mStartTimeNS);
-
-            started[i]= true;
-
-            boolean allstarted = true;
-            for (i=0; i < started.length; i++)
-                allstarted &= started[i];
-
-            if (allstarted) {
-                mSyncLatch.countDown();
-
-                ((SensorManager) getSystemService(SENSOR_SERVICE))
-                        .unregisterListener(this);
-            }
-        }
-
-        @Override
-        public void onAccuracyChanged(Sensor sensor, int accuracy) {
         }
     }
 }
