@@ -19,6 +19,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.PowerManager;
 import android.provider.Settings;
 import android.util.Log;
 
@@ -58,6 +59,7 @@ public class RecorderService extends Service {
     private Long mStartTimeNS = -1l;
     private CountDownLatch mSyncLatch = null;
     private MainReceiver mMainReceiver = null;
+    private PowerManager.WakeLock mwl = null;
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -107,6 +109,12 @@ public class RecorderService extends Service {
             nm.createNotificationChannel(channel);
             nb.setChannelId(CHANID);
         }
+
+        if (mwl == null) {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            mwl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, this.getClass().getSimpleName());
+        }
+
 
 
         /*
@@ -165,11 +173,15 @@ public class RecorderService extends Service {
     }
 
     public void startRecording() throws Exception {
+        mwl.acquire();
+
         String platform = Build.BOARD + " " + Build.DEVICE + " " + Build.VERSION.SDK_INT,
                 output = getDefaultOutputPath(getApplicationContext()),
                 android_id = Settings.Secure.getString(
                         getContentResolver(), Settings.Secure.ANDROID_ID),
                 format = ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN ? "f32le" : "f32be";
+
+
 
         /**
          *  Try to record this list of sensors. We go through this list and get them as wakeup
@@ -257,11 +269,10 @@ public class RecorderService extends Service {
 
         for (int i = 0; i < sensors.size(); i++) {
             Sensor s = sensors.get(i);
-            HandlerThread t = new HandlerThread(s.getName());
-            t.start();
+            HandlerThread t = new HandlerThread(s.getName()); t.start();
             Handler h = new Handler(t.getLooper());
             CopyListener l = new CopyListener(i, RATE, s.getName());
-            int delay = s.isWakeUpSensor() ? s.getFifoMaxEventCount() / 2 * us : 1;
+            int delay = s.isWakeUpSensor() ? s.getFifoMaxEventCount() / 2 * us : 0;
             sm.registerListener(l, s, us, delay, h);
             mSensorListeners.add(l);
         }
@@ -280,6 +291,8 @@ public class RecorderService extends Service {
             } catch (InterruptedException e) {
                 e.printStackTrace();
             }
+
+            mwl.release();
         }
 
         mFFmpeg = null;
@@ -352,16 +365,15 @@ public class RecorderService extends Service {
                 if (mFlushCompleted)
                     mOut.close();
 
-                if (mLastTimestamp != -1)
-                    mErrorUS += (sensorEvent.timestamp - mLastTimestamp) / 1000 - mDelayUS;
-
                 /**
                  *  multiple stream synchronization, wait until a global timestamp was set,
                  *  and only start pushing events after this timestamp.
                  */
-                if (sensorEvent.timestamp < mStartTimeNS) {
+                if (sensorEvent.timestamp < mStartTimeNS)
                     return;
-                }
+
+                if (mLastTimestamp != -1)
+                    mErrorUS += (sensorEvent.timestamp - mLastTimestamp) / 1000 - mDelayUS;
 
                 /*
                  * create an output buffer, once created only delete the last sample. Insert

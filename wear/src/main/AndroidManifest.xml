@@ -6,6 +6,9 @@
 
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission
+android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:allowBackup="true"
@@ -16,7 +19,8 @@
 
         <service
             android:name="de.uni_freiburg.bgrecorder.RecorderService"
-            android:exported="false" />
+            android:exported="false"
+            android:process=":bgrec"/>
 
         <activity
             android:name=".MainActivity">
