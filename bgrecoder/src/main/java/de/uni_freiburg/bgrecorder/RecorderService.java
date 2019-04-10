@@ -216,7 +216,7 @@ public class RecorderService extends Service {
             gotawakeup |= s.isWakeUpSensor();
 
         if (!gotawakeup)
-            throw new Error("no wakeup sensor on device!");
+            Log.w("bgrecorder", "no wakeup sensor on device!");
 
         for (Sensor s : sensors)
             Log.d("bgrecorder", String.format("recording %s %s",
@@ -272,7 +272,7 @@ public class RecorderService extends Service {
             HandlerThread t = new HandlerThread(s.getName()); t.start();
             Handler h = new Handler(t.getLooper());
             CopyListener l = new CopyListener(i, RATE, s.getName());
-            int delay = s.isWakeUpSensor() ? s.getFifoMaxEventCount() / 2 * us : 0;
+            int delay = s.isWakeUpSensor() ? s.getFifoMaxEventCount() / 2 * us : 1;
             sm.registerListener(l, s, us, delay, h);
             mSensorListeners.add(l);
         }
@@ -397,7 +397,7 @@ public class RecorderService extends Service {
                 /**
                  * check whether or not interpolation is required
                  */
-                if (Math.abs(mErrorUS) > 1.1 * mDelayUS)
+                if (Math.abs(mErrorUS) > mDelayUS)
                     Log.e("bgrec", String.format(
                             "sample delay too large %.4f %s", mErrorUS / 1e6, mName));
 
@@ -405,7 +405,9 @@ public class RecorderService extends Service {
                     mOut = mFFmpeg.getOutputStream(index);
 
                 if (mErrorUS < -mDelayUS) {   // too fast -> remove
-                    mErrorUS += (sensorEvent.timestamp - mLastTimestamp) / 1000;
+                    while (mErrorUS < -mDelayUS)
+                        mErrorUS += mDelayUS;
+
                 } else if (mErrorUS > mDelayUS) {   // too slow -> copy'n'insert
                     while (mErrorUS > mDelayUS) {
                         mOut.write(mBuf.array());
