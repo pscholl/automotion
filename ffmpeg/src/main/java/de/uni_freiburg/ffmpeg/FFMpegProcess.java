@@ -44,6 +44,7 @@ public class FFMpegProcess {
 
                 while(!isCancelled()) {
                     int n = is.read(buf);
+                    if (n < 0) break;
                     System.err.write(buf, 0, n);
                 }
             } catch (IOException e) {}
