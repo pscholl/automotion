@@ -24,13 +24,11 @@ import android.provider.Settings;
 import android.util.Log;
 
 import java.io.File;
-import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
-import java.util.Arrays;
 import java.util.Date;
 import java.util.LinkedList;
 import java.util.TimeZone;
@@ -326,7 +324,7 @@ public class RecorderService extends Service {
         private final int index;
         private final long mDelayUS;
         private long mSampleCount;
-        private long mErrorUS;
+        private long mOffsetUS;
         private final String mName;
 
         private OutputStream mOut;
@@ -343,9 +341,9 @@ public class RecorderService extends Service {
             index = i;
             mOut = null;
             mName = name;
-            mErrorUS = 0;
             mDelayUS = (long) (1e6 / rate);
             mSampleCount = 0;
+            mOffsetUS = 0;
         }
 
         @Override
@@ -373,7 +371,9 @@ public class RecorderService extends Service {
                     return;
 
                 if (mLastTimestamp != -1)
-                    mErrorUS += (sensorEvent.timestamp - mLastTimestamp) / 1000 - mDelayUS;
+                    mOffsetUS += (sensorEvent.timestamp - mLastTimestamp) / 1000;
+                mLastTimestamp = sensorEvent.timestamp;
+
 
                 /*
                  * create an output buffer, once created only delete the last sample. Insert
@@ -397,30 +397,21 @@ public class RecorderService extends Service {
                 /**
                  * check whether or not interpolation is required
                  */
-                if (Math.abs(mErrorUS) > mDelayUS)
+                if (Math.abs(mOffsetUS) - mDelayUS > mDelayUS)
                     Log.e("bgrec", String.format(
-                            "sample delay too large %.4f %s", mErrorUS / 1e6, mName));
+                            "sample delay too large %.4f %s", mOffsetUS / 1e6, mName));
 
                 if (mOut == null)
                     mOut = mFFmpeg.getOutputStream(index);
 
-                if (mErrorUS < -mDelayUS) {   // too fast -> remove
-                    while (mErrorUS < -mDelayUS)
-                        mErrorUS += mDelayUS;
+                if (mOffsetUS < mDelayUS)      // too fast -> remove
+                    return;
 
-                } else if (mErrorUS > mDelayUS) {   // too slow -> copy'n'insert
-                    while (mErrorUS > mDelayUS) {
-                        mOut.write(mBuf.array());
-                        mErrorUS -= mDelayUS;
-                        mSampleCount++;
-                    }
-                } else {   // rate ok -> write
+                while (mOffsetUS > mDelayUS) { // add new samples, might be too slow
                     mOut.write(mBuf.array());
+                    mOffsetUS -= mDelayUS;
                     mSampleCount++;
                 }
-
-                mLastTimestamp = sensorEvent.timestamp;
-
             } catch (Exception e) {
                 e.printStackTrace();
                 SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
