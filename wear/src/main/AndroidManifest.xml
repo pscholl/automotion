@@ -29,6 +29,7 @@
             </intent-filter>
         </activity>
 
+        <!--
         <receiver
             android:name="de.uni_freiburg.bgrecorder.MainReceiver"
             android:enabled="true"
@@ -40,6 +41,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </receiver>
+        -->
 
     </application>
 

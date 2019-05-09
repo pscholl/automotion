@@ -1,8 +1,12 @@
 package de.uni_freiburg.automotion;
 
 import android.Manifest;
+import android.app.AlertDialog;
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
@@ -59,6 +63,26 @@ public class MainActivity extends FragmentActivity {
                 intent.setData(Uri.parse("package:" + packageName));
                 startActivity(intent);
             }
+        }
+
+
+        /** some Huawei fuckup hackery, see
+         * https://stackoverflow.com/questions/31638986/protected-apps-setting-on-huawei-phones-and-how-to-handle-it
+         */
+        final SharedPreferences sp = getSharedPreferences("ProtectedApps", Context.MODE_PRIVATE);
+        if("huawei".equalsIgnoreCase(android.os.Build.MANUFACTURER) && !sp.getBoolean("protected",false)) {
+            AlertDialog.Builder builder  = new AlertDialog.Builder(this);
+            builder.setTitle(R.string.huawei_headline).setMessage(R.string.huawei_text)
+                    .setPositiveButton(R.string.go_to_protected, new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialogInterface, int i) {
+                            Intent intent = new Intent();
+                            intent.setComponent(new ComponentName("com.huawei.systemmanager",
+                                    "com.huawei.systemmanager.optimize.process.ProtectActivity"));
+                            startActivity(intent);
+                            sp.edit().putBoolean("protected",true).commit();
+                        }
+                    }).create().show();
         }
     }
 

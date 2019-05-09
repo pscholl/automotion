@@ -45,7 +45,7 @@ import de.uni_freiburg.ffmpeg.FFMpegProcess;
 public class RecorderService extends Service {
     private static final double RATE = 50.;
     private static final String CHANID = "RecorderServiceNotification";
-    private String VERSION = "1.0";
+    private String VERSION = "1.1";
     private FFMpegProcess mFFmpeg;
     private int NOTIFICATION_ID = 0x007;
 
@@ -56,8 +56,15 @@ public class RecorderService extends Service {
     /* for start synchronization */
     private Long mStartTimeNS = -1l;
     private CountDownLatch mSyncLatch = null;
-    private MainReceiver mMainReceiver = null;
     private PowerManager.WakeLock mwl = null;
+
+    /* special WakeLock tag for Huawei Devices, see
+     * https://stackoverflow.com/questions/39954822/battery-optimizations-wakelocks-on-huawei-emui-4-0
+     */
+    private static final String WAKE_LOCK_TAG = "LocationManagerService";
+
+    /* for receiving events on Android */
+    private static volatile MainReceiver mMainReceiver = null;
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -86,66 +93,12 @@ public class RecorderService extends Service {
     }
 
     @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        super.onStartCommand(intent, flags, startId);
+    public void onCreate() {
+        super.onCreate();
 
         /* We continiously start the service to receive Battery Events, which can not be done
          * differently under Android 8.0 since no Battery PLUG/UNPLUG events are sent to
          * broadcast receivers anymore. */
-        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-
-        Notification.Builder nb =  new Notification.Builder(this)
-                .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(getString(R.string.notification_title))
-                .setPriority(Notification.PRIORITY_LOW);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(CHANID,
-                    getString(R.string.notification_channel),
-                    NotificationManager.IMPORTANCE_LOW);
-
-            nm.createNotificationChannel(channel);
-            nb.setChannelId(CHANID);
-        }
-
-        if (mwl == null) {
-            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-            mwl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, this.getClass().getSimpleName());
-        }
-
-
-
-        /*
-         * start the recording process if there is no ffmpeg instance yet, and no stop intent
-         * was sent.
-         */
-        if (intent != null && ACTION_STOP.equals(intent.getAction()))
-            stopRecording();
-
-        else if (mFFmpeg == null && !isConnected(this))
-            try {
-                startRecording();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-
-        /*
-         * update the notification text accordingly
-         */
-        nb.setContentText(getString(
-                mFFmpeg != null ?
-                R.string.notification_recording_ongoing :
-                R.string.notification_recording_paused));
-
-        /*
-         * update the notifications and make sure that the service is started in foreground.
-         */
-        nm.notify(NOTIFICATION_ID, nb.build());
-        startForeground(NOTIFICATION_ID, nb.build());
-
-        /*
-         * make sure that the Battery PLUG/UNPLUG events are received.
-         */
         if (mMainReceiver == null) {
             mMainReceiver = new MainReceiver();
 
@@ -155,8 +108,96 @@ public class RecorderService extends Service {
 
             registerReceiver(mMainReceiver, power);
         }
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        super.onStartCommand(intent, flags, startId);
+
+        Log.d("bgrec", "onStart: " + intent.toString() + " ffmpeg " + mFFmpeg);
+
+        if (mwl == null) {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            mwl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG);
+        }
+
+        /*
+         * start the recording process if there is no ffmpeg instance yet, and no stop intent
+         * was sent. When starting a recording, the mSyncLatch variable is initialized!
+         */
+        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            stopRecording();
+
+            /*
+             * update the notifications and make sure that the service is started in foreground.
+             */
+            startForeground(NOTIFICATION_ID, updateNotification(false));
+        }
+
+        else if (mFFmpeg == null && !isConnected(this))
+            try {
+                startForeground(NOTIFICATION_ID, updateNotification(true) );
+                startRecording();
+
+                /*
+                 * monitor the starting status and update the notification once the recording
+                 * is started.
+                 */
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            mSyncLatch.await();
+                            updateNotification(false);
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }).start();
+
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
 
         return START_STICKY;
+    }
+
+    private Notification updateNotification(boolean ispreparing) {
+        Log.e("bgrec", "update notification " + mFFmpeg + " " + (mSyncLatch == null ? "null" : new Long(mSyncLatch.getCount()).toString()) + " " + ispreparing);
+
+        /**
+         * directly update the notification text, when started/stopped by the system.
+         */
+        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+
+        Notification.Builder nb =  new Notification.Builder(RecorderService.this)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(getString(R.string.notification_title))
+                .setPriority(Notification.PRIORITY_LOW);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel channel = new NotificationChannel(CHANID,
+                    getString(R.string.notification_channel),
+                    NotificationManager.IMPORTANCE_LOW);
+            nm.createNotificationChannel(channel);
+            nb.setChannelId(CHANID);
+        }
+
+        /*
+         * update the notification text accordingly
+         */
+        nb.setContentText(getString(
+                ispreparing ?
+                        R.string.notification_recording_preping :
+                mFFmpeg != null ?
+                mSyncLatch != null && mSyncLatch.getCount() == 0 ?
+                        R.string.notification_recording_ongoing :
+                        R.string.notification_recording_preping :
+                        R.string.notification_recording_paused));
+
+        Notification n = nb.build();
+        nm.notify(NOTIFICATION_ID, n);
+        return n;
     }
 
     public static boolean isConnected(Context context) {
@@ -179,23 +220,21 @@ public class RecorderService extends Service {
                         getContentResolver(), Settings.Secure.ANDROID_ID),
                 format = ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN ? "f32le" : "f32be";
 
-
-
         /**
          *  Try to record this list of sensors. We go through this list and get them as wakeup
          *  sensors first. Terminate if there is no wakeup supported (otherwise a wake-lock would
          *  be required). Then get all sensors as non-wakeups and select only those that are there.
          */
-        SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
+        final SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
         int[] types = {
                 Sensor.TYPE_ROTATION_VECTOR,
                 Sensor.TYPE_ACCELEROMETER,
                 Sensor.TYPE_GYROSCOPE,
                 Sensor.TYPE_MAGNETIC_FIELD,
-                Sensor.TYPE_RELATIVE_HUMIDITY,
+/*                Sensor.TYPE_RELATIVE_HUMIDITY,
                 Sensor.TYPE_PRESSURE,
                 Sensor.TYPE_LIGHT,
-                Sensor.TYPE_AMBIENT_TEMPERATURE
+                Sensor.TYPE_AMBIENT_TEMPERATURE */
         };
         LinkedList<Sensor> sensors = new LinkedList<>();
 
@@ -259,6 +298,7 @@ public class RecorderService extends Service {
                 public void onSensorChanged(SensorEvent event) {
                     mStartTimeNS = Long.max(event.timestamp, mStartTimeNS);
                     mSyncLatch.countDown();
+                    sm.unregisterListener(this);
                 }
 
                 @Override
@@ -280,6 +320,10 @@ public class RecorderService extends Service {
     public void stopRecording() {
         if (mFFmpeg != null) {
             try {
+                /** if stuck in preparing state */
+                for (int i=0; i < mSyncLatch.getCount(); i++)
+                    mSyncLatch.countDown();
+
                 SensorManager sm = (SensorManager) getSystemService(SENSOR_SERVICE);
 
                 for (CopyListener l : mSensorListeners)
