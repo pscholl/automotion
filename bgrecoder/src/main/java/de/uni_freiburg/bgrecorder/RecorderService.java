@@ -45,7 +45,7 @@ import de.uni_freiburg.ffmpeg.FFMpegProcess;
 public class RecorderService extends Service {
     private static final double RATE = 50.;
     private static final String CHANID = "RecorderServiceNotification";
-    private String VERSION = "1.2";
+    private String VERSION = "1.21";
     private FFMpegProcess mFFmpeg;
     private int NOTIFICATION_ID = 0x007;
 
@@ -121,23 +121,22 @@ public class RecorderService extends Service {
             mwl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG);
         }
 
-
         /*
          * start the recording process if there is no ffmpeg instance yet, and no stop intent
          * was sent. When starting a recording, the mSyncLatch variable is initialized!
          */
-        boolean doStartRecording = mFFmpeg == null && !isConnected(this);
+        boolean doStopRecording = intent != null && ACTION_STOP.equals(intent.getAction()),
+                doStartRecording = mFFmpeg == null && !isConnected(this);
 
         /**
          * start the service in foreground mode, so Android won't kill it when running in
          * background. Do this before actually starting the service to not delay the UI while
          * the service is being started.
          */
-        startForeground(NOTIFICATION_ID, updateNotification(doStartRecording));
+        startForeground(NOTIFICATION_ID, updateNotification(!doStopRecording && doStartRecording));
 
-        if (intent != null && ACTION_STOP.equals(intent.getAction()))
+        if (doStopRecording)
             stopRecording();
-
 
         else if (doStartRecording)
             try {
@@ -162,6 +161,11 @@ public class RecorderService extends Service {
             } catch (Exception e) {
                 e.printStackTrace();
             }
+
+        /**
+         * make sure the notification reflects the state after changes were done.
+         */
+        updateNotification(!doStopRecording && doStartRecording);
 
         return START_STICKY;
     }
