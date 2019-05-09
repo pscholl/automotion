@@ -121,22 +121,26 @@ public class RecorderService extends Service {
             mwl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG);
         }
 
+
         /*
          * start the recording process if there is no ffmpeg instance yet, and no stop intent
          * was sent. When starting a recording, the mSyncLatch variable is initialized!
          */
-        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+        boolean doStartRecording = mFFmpeg == null && !isConnected(this);
+
+        /**
+         * start the service in foreground mode, so Android won't kill it when running in
+         * background. Do this before actually starting the service to not delay the UI while
+         * the service is being started.
+         */
+        startForeground(NOTIFICATION_ID, updateNotification(doStartRecording));
+
+        if (intent != null && ACTION_STOP.equals(intent.getAction()))
             stopRecording();
 
-            /*
-             * update the notifications and make sure that the service is started in foreground.
-             */
-            startForeground(NOTIFICATION_ID, updateNotification(false));
-        }
 
-        else if (mFFmpeg == null && !isConnected(this))
+        else if (doStartRecording)
             try {
-                startForeground(NOTIFICATION_ID, updateNotification(true) );
                 startRecording();
 
                 /*
