@@ -45,7 +45,7 @@ import de.uni_freiburg.ffmpeg.FFMpegProcess;
 public class RecorderService extends Service {
     private static final double RATE = 50.;
     private static final String CHANID = "RecorderServiceNotification";
-    private String VERSION = "1.1";
+    private String VERSION = "1.2";
     private FFMpegProcess mFFmpeg;
     private int NOTIFICATION_ID = 0x007;
 
